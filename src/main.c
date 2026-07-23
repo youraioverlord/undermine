@@ -410,10 +410,14 @@ static void draw_frame(const GameState *s)
  * game thread only calls synth_trigger — a benign race at worst clips one
  * SFX attack, never corrupts the sim (which the synth never touches). */
 static Synth g_synth;
+static bool  g_soundOff = false;   /* M on the title toggles it */
 
 static void audio_cb(void *buffer, unsigned int frames)
 {
+    /* render even when muted so songs/SFX keep their place in time —
+     * unmuting rejoins the music mid-tune instead of resuming a freeze */
     synth_render(&g_synth, (float *)buffer, (int)frames);
+    if (g_soundOff) memset(buffer, 0, frames * sizeof(float));
 }
 
 /* Fire SFX from what changed between two sim snapshots. */
@@ -428,6 +432,16 @@ static void audio_events(const GameState *prev, const GameState *cur)
         synth_trigger(&g_synth, cur->coalGot >= cur->coalTotal ? SFX_QUOTA : SFX_COAL);
     if (prev->onGround && !cur->onGround && cur->vy < 0) synth_trigger(&g_synth, SFX_JUMP);
     if (!prev->onGround && cur->onGround)                synth_trigger(&g_synth, SFX_LAND);
+    if (cur->depth == prev->depth) {   /* a crusher bottoming out this tick thuds */
+        int i;
+        for (i = 0; i < cur->enemyCount; i++) {
+            const Enemy *e = &cur->enemies[i];
+            float bottom = e->baseY + (float)e->range;
+            if (e->type == EN_CRUSHER &&
+                prev->enemies[i].y < bottom && e->y >= bottom)
+                synth_trigger(&g_synth, SFX_SLAM);
+        }
+    }
 }
 
 static Input read_input(void)
@@ -1987,6 +2001,23 @@ static int selftest(void)
         bot2_input(&g, &n2);
         check(strstr(n1.say, "coal") != NULL, "bot1: narrates its coal goal");
         check(strstr(n2.say, "coal") != NULL, "bot2: narrates its coal goal"); }
+
+    /* §5.5 crusher-path safety: a crusher whose slam column severs the only
+     * route is deleted at generation; one over open, jumpable floor stays. */
+    { GameState g; int c2;
+      memset(&g, 0, sizeof g); g.state = PS_ALIVE; g.lives = 3; g.ridingPlat = -1;
+      for (c2 = 0; c2 < ROOM_W; c2++) g.tiles[BEDROCK_ROW][c2] = TILE_SOLID;
+      g.spawnCol = 2; g.exitCol = 13;
+      g.coal[BEDROCK_ROW - 1][10] = true; g.coalTotal = 1;
+      g.enemyCount = 1;
+      { Enemy *e = &g.enemies[0]; memset(e, 0, sizeof *e); e->type = EN_CRUSHER;
+        e->baseX = (float)(8 * TILE);                 /* slam floor = bedrock */
+        e->baseY = (float)(10 * TILE); e->range = 4 * TILE; }
+      sim_cull_blocking_crushers(&g);
+      check(g.enemyCount == 1, "crusher cull: an open-floor crusher stays (jumpable around)");
+      g.enemies[0].baseX = (float)(2 * TILE);         /* now it slams the only entry landing */
+      sim_cull_blocking_crushers(&g);
+      check(g.enemyCount == 0, "crusher cull: one severing the only path is deleted"); }
       /* a ladder does NOT shield from a climbing foreman: the retreat pattern
        * (as used by greedy/cautious.mole) must step OFF the rail once topped
        * out — standing on the top rung "feeling safe" gets a bot caught. */
@@ -2229,6 +2260,46 @@ static int selftest(void)
       synth_trigger(&syn, SFX_COAL);
       check(syn.v[0].active, "synth: SFX still plays over music"); }
 
+    /* game-over jingle (§4.2): minor-key, audible, and plays exactly once */
+    { Synth syn; float buf[4096]; int i; bool audible = false; long t;
+      synth_init(&syn);
+      synth_music_play(&syn, SONG_OVER);
+      for (t = 0; t < 5L * SYNTH_RATE / 4096; t++) {    /* ~5s > one 2.6s pass */
+          synth_render(&syn, buf, 4096);
+          for (i = 0; i < 4096; i++) if (buf[i] > 0.02f || buf[i] < -0.02f) audible = true;
+      }
+      check(audible, "synth: game-over jingle is audible");
+      check(!syn.music.on, "synth: game-over jingle plays once and stops itself"); }
+
+    /* the death jingle ducks the music, which then fades back in */
+    { Synth syn; float buf[64]; int t;
+      synth_init(&syn);
+      synth_music_play(&syn, SONG_TITLE);
+      synth_trigger(&syn, SFX_DEATH);
+      check(syn.music.duckPos > 0, "synth: the death jingle ducks the music");
+      for (t = 0; t < SYNTH_RATE / 64 + 1; t++) synth_render(&syn, buf, 64);   /* ~1s */
+      check(syn.music.duckPos == 0, "synth: the duck releases after the jingle"); }
+
+    /* the 10-depth descend sweep: arms, stays in range, and ends */
+    { Synth syn; float buf[4096]; int i; bool ok = true; long t;
+      synth_init(&syn);
+      synth_music_play(&syn, SONG_TITLE);
+      synth_sweep(&syn);
+      check(syn.music.sweepPos > 0, "synth: the descend filter sweep arms");
+      for (t = 0; t < 2L * SYNTH_RATE / 4096; t++) {
+          synth_render(&syn, buf, 4096);
+          for (i = 0; i < 4096; i++) if (buf[i] > 1.0f || buf[i] < -1.0f) ok = false;
+      }
+      check(ok && syn.music.sweepPos == 0, "synth: the sweep stays clean and ends"); }
+
+    /* the crusher slam thuds */
+    { Synth syn; float buf[512]; int i; bool audible = false;
+      synth_init(&syn);
+      synth_trigger(&syn, SFX_SLAM);
+      synth_render(&syn, buf, 512);
+      for (i = 0; i < 512; i++) if (buf[i] > 0.01f || buf[i] < -0.01f) audible = true;
+      check(audible, "synth: the crusher slam thuds"); }
+
     scores_selftest();   /* leaderboard ordering/dedupe (defined by the score table) */
 
     printf(fails ? "\nSELFTEST FAILED (%d)\n" : "\nSELFTEST OK\n", fails);
@@ -2378,6 +2449,30 @@ static void ctext(const char *t, int y, int size, Color c)
     DrawText(t, (SCREEN_W - MeasureText(t, size)) / 2, y, size, c);
 }
 
+/* Post-frame theater for one screen (§6.1 / §8-M5). Render-only — the sim is
+ * never paused, so lock-step, determinism and the demo arena are untouched:
+ *  - shaft-drop reveal: on a descent the new room is unveiled top-down under
+ *    a black curtain, as if dropping in through the entry shaft;
+ *  - palette flash on death: the screen strobes white then red for the first
+ *    dying ticks (the C64 move), then the sprite's own death anim plays out. */
+#define WIPE_FRAMES 40   /* ~0.65 s at 60 fps */
+static void draw_screen_fx(const GameState *g, int *wipe, int *lastDepth)
+{
+    if (g->depth == *lastDepth + 1) *wipe = WIPE_FRAMES;   /* just descended */
+    *lastDepth = g->depth;
+    if (*wipe > 0) {
+        int k = 8 + ((SCREEN_H - 8) * (WIPE_FRAMES - *wipe)) / WIPE_FRAMES;
+        DrawRectangle(0, k, SCREEN_W, SCREEN_H - k, C64[BLACK_]);
+        if (k <= 112) ctext(TextFormat("DEPTH %d", g->depth), 120, 8, C64[YELLOW_]);
+        (*wipe)--;
+    }
+    if (g->state == PS_DYING) {
+        int el = DYING_TICKS - g->dyingTimer;
+        if (el < 8 && (el & 2) == 0)
+            DrawRectangle(0, 8, SCREEN_W, SCREEN_H - 8, C64[el < 4 ? WHITE_ : RED_]);
+    }
+}
+
 static void draw_scoreboard(int y)
 {
     int i;
@@ -2408,7 +2503,8 @@ static void draw_title(long t, int demoSecs)
         ctext("ENTER DIG   ESC CANCEL", 170, 8, C64[LTGREEN_]);
     } else {
         if ((t / 25) % 2 == 0) ctext("PRESS SPACE TO DIG", 158, 8, C64[WHITE_]);
-        ctext("D DAILY RUN  S SEED  F1 INFO", 170, 8, C64[LTGREEN_]);
+        ctext(TextFormat("D DAILY  S SEED  F1 INFO  M SOUND:%s",
+                         g_soundOff ? "OFF" : "ON"), 170, 8, C64[LTGREEN_]);
     }
     /* F2/F3 load a scripted .mole bot into a screen; once loaded, the line names
      * the script and its author. Empty = the built-in bot plays that screen. */
@@ -2432,6 +2528,7 @@ static void draw_info(long t)
     ctext("ARROWS / WASD   move & climb", y, 8, C64[WHITE_]); y += 10;
     ctext("SPACE / J       jump", y, 8, C64[WHITE_]); y += 10;
     ctext("P               pause", y, 8, C64[WHITE_]); y += 10;
+    ctext("M               sound on/off (title)", y, 8, C64[WHITE_]); y += 10;
     ctext("ESC             quit to title / game", y, 8, C64[WHITE_]); y += 18;
     ctext("TWO SCREENS", y, 8, C64[LTGREEN_]); y += 12;
     ctext("You play the left; a bot plays the", y, 8, C64[WHITE_]); y += 10;
@@ -2765,6 +2862,7 @@ int main(int argc, char **argv)
         int anchLc = 0, anchLr = 0, anchRc = 0, anchRr = 0;  /* confinement anchor cell per bot */
         long moveLT = 0, moveRT = 0;                     /* last tick each bot actually moved */
         int seenDepthL = 1, seenDepthR = 1;
+        int wipeL = 0, wipeR = 0, fxDepthL = -1, fxDepthR = -1;  /* shaft-drop reveal state */
         long oxygenTicks = 0;                            /* sim ticks since a bot last reached the exit */
         const long STUCK = 500;                          /* motionless this long (~10s) = stuck */
         const long OXYGEN_MAX = TICK_RATE * 150;         /* 2.5 min of air (sim is a fixed 50 Hz) */
@@ -2811,9 +2909,15 @@ int main(int argc, char **argv)
                         if (demo) say_log_tick(0, g_mole1 ? mole_say(g_mole1) : nav1.say, &gL);
                         say_log_tick(1, g_mole2 ? mole_say(g_mole2) : nav2.say, &gR);
                         audio_events(&prevL, &gL);   /* audio follows the left screen */
-                        if (gL.depth != prevL.depth)
+                        if (gL.depth != prevL.depth) {
                             synth_set_pitch(&g_synth,
                                 powf(2.0f, -(float)((gL.depth - 1) / 10) / 12.0f));
+                            /* crossing into a new 10-depth band: transpose down
+                             * a semitone AND dip the filter — descending dread */
+                            if (gL.depth > prevL.depth &&
+                                (gL.depth - 1) / 10 != (prevL.depth - 1) / 10)
+                                synth_sweep(&g_synth);
+                        }
                         /* Human play: if the player clears the room before the bot,
                          * pull the bot forward to the player's new room so both
                          * advance together — the player never waits for a slow bot.
@@ -2888,7 +2992,7 @@ int main(int argc, char **argv)
                         scores_save();
                         screen = SCR_OVER;
                         synth_set_pitch(&g_synth, 1.0f);
-                        synth_music_play(&g_synth, SONG_TITLE);
+                        synth_music_play(&g_synth, SONG_OVER);   /* plays once, then quiet */
                     }
                 }
             } else if (screen == SCR_TITLE) {
@@ -2927,6 +3031,7 @@ int main(int argc, char **argv)
                 else if (IsKeyPressed(KEY_F3)) { load_bot(2, uiTicks); titleIdle = 0; }
                 else if (IsKeyPressed(KEY_S)) { g_seedEntry = true; g_seedLen = 0;
                                                 g_seedBuf[0] = '\0'; titleIdle = 0; }
+                else if (IsKeyPressed(KEY_M)) { g_soundOff = !g_soundOff; titleIdle = 0; }
                 else if (IsKeyPressed(KEY_ESCAPE)) quit = true;   /* ESC on the title quits */
                 else if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_J))
                     seed = seed_clip((uint64_t)time(NULL) * 0x9E3779B1ULL + (uint64_t)uiTicks);
@@ -2951,11 +3056,16 @@ int main(int argc, char **argv)
                     moveLT = moveRT = uiTicks; oxygenTicks = 0;
                 }
             } else if (screen == SCR_INFO) {
-                if (GetKeyPressed() != 0) { screen = SCR_TITLE; titleIdle = 0; }
+                if (GetKeyPressed() != 0) {
+                    screen = SCR_TITLE; titleIdle = 0;
+                    /* arriving via game over, the jingle has gone quiet */
+                    if (!g_synth.music.on) synth_music_play(&g_synth, SONG_TITLE);
+                }
             } else if (screen == SCR_OVER) {
                 if (IsKeyPressed(KEY_F1)) { screen = SCR_INFO; }
                 else if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER)) {
                     screen = SCR_TITLE; titleIdle = 0;
+                    synth_music_play(&g_synth, SONG_TITLE);
                 }
             }
 
@@ -2979,6 +3089,7 @@ int main(int argc, char **argv)
                   DrawText(nm, 4, 10, 8, C64[LTGREEN_]);
                   if (demo && m1[0])
                       DrawText(m1, 4 + MeasureText(nm, 8) + 8, 10, 8, C64[LTGREY_]); }
+                draw_screen_fx(&gL, &wipeL, &fxDepthL);
                 if (demo) ctext("PRESS ANY KEY", SCREEN_H - 10, 8, C64[BLACK_]);
                 break;
             }
@@ -2994,6 +3105,7 @@ int main(int argc, char **argv)
                      DrawText(g_mole2Name, 4, 10, 8, C64[LTBLUE_]);
                      if (m2[0])
                          DrawText(m2, 4 + MeasureText(g_mole2Name, 8) + 8, 10, 8, C64[LTGREY_]); }
+                   draw_screen_fx(&gR, &wipeR, &fxDepthR);
                    /* the shared run seed, in hex — read it here to replay a run via S */
                    ctext(TextFormat("SEED %06llX", (unsigned long long)gR.runSeed),
                          SCREEN_H - 10, 8, C64[BLACK_]); }

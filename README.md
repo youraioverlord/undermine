@@ -93,7 +93,7 @@ Sanity check the build with the 160+ test suite:
   types in any 6-digit hex seed (the current seed is shown in-game — see a
   great mine, share the number).
 - **Arrows / WASD** move and climb, **SPACE/J** jumps, **P** pauses,
-  **ESC** quits to the title.
+  **ESC** quits to the title. **M** on the title toggles sound.
 - Collect all the coal (and the key, from depth 10) to open the exit. Mind
   the air bar at the bottom. Touch nothing that moves — or hangs from the
   ceiling; a crusher is deadly even while it naps.

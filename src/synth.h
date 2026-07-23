@@ -18,10 +18,11 @@ typedef enum {
     SFX_QUOTA,
     SFX_DEATH,
     SFX_DESCEND,
+    SFX_SLAM,
     SFX_COUNT
 } SfxId;
 
-typedef enum { SONG_TITLE = 0, SONG_INGAME, SONG_COUNT } SongId;
+typedef enum { SONG_TITLE = 0, SONG_INGAME, SONG_OVER, SONG_COUNT } SongId;
 
 /* one note of an effect: waveform, frequency, length, level */
 typedef struct { float freq; int wave; int ms; float vol; } SynthSeg;
@@ -37,14 +38,21 @@ typedef struct {
     int   priority;
 } SynthVoice;
 
-/* Looping two-part music (melody + bass), rendered alongside the SFX voices. */
+/* Music: melody + bass, plus an optional third arpeggio voice (the classic
+ * SID "chord on one voice" trick), rendered alongside the SFX voices. */
 typedef struct {
     const int *mel, *bass;   /* per-row frequencies in Hz; 0 = rest */
+    const int *arp;          /* per-row chord roots; negative = minor, 0 = rest */
     int   len;               /* rows in the loop */
     int   row, sampleInRow, rowSamples;
     int   melWave, bassWave;
-    float melPhase, bassPhase;
+    float melPhase, bassPhase, arpPhase;
+    int   arpStep, arpStepSamp;   /* triad note cycled at ~50 Hz, SID-style */
+    bool  loop;              /* false: a one-shot jingle (game over) ends itself */
     float pitch;             /* multiplier for the depth-based transpose */
+    int   duckPos, duckTotal;     /* death jingle ducks the music, fading back */
+    int   sweepPos, sweepTotal;   /* low-pass sweep on the 10-depth transpose */
+    float lp;                     /* one-pole filter state for the sweep */
     bool  on;
 } SynthMusic;
 
@@ -59,6 +67,7 @@ void synth_trigger(Synth *s, SfxId id);
 void synth_music_play(Synth *s, SongId id);
 void synth_music_stop(Synth *s);
 void synth_set_pitch(Synth *s, float mult);            /* 1.0 = normal pitch */
+void synth_sweep(Synth *s);      /* 1s filter dip — the "descending dread" cue */
 void synth_render(Synth *s, float *out, int frames);   /* mono float, [-1,1] */
 
 #endif

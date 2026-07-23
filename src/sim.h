@@ -171,6 +171,7 @@ TileType sim_tile_at(const GameState *s, int tx, int ty);
 /* Generation / validation — exposed for property tests (main.c --selftest). */
 void     sim_gen_room(GameState *s, uint64_t seed, int depth, int entryCol);
 bool     sim_room_solvable(const GameState *s);  /* BFS reachability, exit closed */
+void     sim_cull_blocking_crushers(GameState *s); /* §5.5: delete crushers severing the only path */
 bool     sim_standable(const GameState *s, int c, int r);  /* body-aware foothold test */
 /* Would a player-sized box at (px,py), grown by `margin` px, touch any enemy's
  * lethal zone? Used by the demo bot to steer clear of enemies. */

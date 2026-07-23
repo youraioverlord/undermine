@@ -313,18 +313,24 @@ static bool standable(const GameState *s, int c, int r)
     return below == TILE_SOLID || below == TILE_ONEWAY || below == TILE_LADDER;
 }
 
-bool sim_room_solvable(const GameState *s)
+/* The BFS body, with an optional BANNED cell the path may never stand on or
+ * pass through (banC = -1 disables it). The ban is how the crusher-path rule
+ * (§5.5) probes a slam cell: unlike walling the tile off, a ban can't be
+ * defeated by standing on top of the imagined wall. */
+static bool solvable_banned(const GameState *s, int banC, int banR)
 {
     bool seen[ROOM_H][ROOM_W];
     int qx[ROOM_H * ROOM_W], qy[ROOM_H * ROOM_W], head = 0, tail = 0;
     int startC = s->spawnCol, startR = -1, r, c, dd, dx, dy;
     int coalLeft = 0;
 
+#define OKCELL(cc2, rr2) (standable(s, (cc2), (rr2)) && !((cc2) == banC && (rr2) == banR))
+
     memset(seen, 0, sizeof seen);
 
     /* entry: first standable cell below the spawn column (fall-in landing) */
     for (r = 0; r < ROOM_H; r++)
-        if (standable(s, startC, r)) { startR = r; break; }
+        if (OKCELL(startC, r)) { startR = r; break; }
     if (startR < 0) return false;
 
     seen[startR][startC] = true;
@@ -336,18 +342,18 @@ bool sim_room_solvable(const GameState *s)
         /* walk left/right */
         for (dx = -1; dx <= 1; dx += 2) {
             int nc = c + dx;
-            if (standable(s, nc, r) && !seen[r][nc]) {
+            if (OKCELL(nc, r) && !seen[r][nc]) {
                 seen[r][nc] = true; qx[tail] = nc; qy[tail] = r; tail++;
             }
         }
         /* climb up / down through ladders (and step onto a platform on top) */
         if (is_ladder(s, c, r) || is_ladder(s, c, r - 1)) {
-            if (r - 1 >= 0 && standable(s, c, r - 1) && !seen[r - 1][c]) {
+            if (r - 1 >= 0 && OKCELL(c, r - 1) && !seen[r - 1][c]) {
                 seen[r - 1][c] = true; qx[tail] = c; qy[tail] = r - 1; tail++;
             }
         }
         if (is_ladder(s, c, r) || is_ladder(s, c, r + 1)) {
-            if (r + 1 < ROOM_H && standable(s, c, r + 1) && !seen[r + 1][c]) {
+            if (r + 1 < ROOM_H && OKCELL(c, r + 1) && !seen[r + 1][c]) {
                 seen[r + 1][c] = true; qx[tail] = c; qy[tail] = r + 1; tail++;
             }
         }
@@ -358,10 +364,11 @@ bool sim_room_solvable(const GameState *s)
             if (standable(s, nc, r)) continue;                       /* handled by walk */
             if (sim_tile_at(s, nc, r) == TILE_SOLID) continue;       /* wall, can't enter */
             if (r - 1 >= 0 && sim_tile_at(s, nc, r - 1) == TILE_SOLID) continue; /* head */
+            if (nc == banC && r == banR) continue;                   /* falls through the ban */
             for (dd = 1; dd <= 4; dd++) {
                 int nr = r + dd;
                 if (nr >= ROOM_H) break;
-                if (standable(s, nc, nr) && !seen[nr][nc]) {
+                if (OKCELL(nc, nr) && !seen[nr][nc]) {
                     seen[nr][nc] = true; qx[tail] = nc; qy[tail] = nr; tail++;
                     break;
                 }
@@ -373,7 +380,7 @@ bool sim_room_solvable(const GameState *s)
             for (dx = -3; dx <= 3; dx++) {
                 int nc = c + dx, nr = r - dy;
                 if (dx == 0 && dy == 0) continue;
-                if (standable(s, nc, nr) && !seen[nr][nc]) {
+                if (OKCELL(nc, nr) && !seen[nr][nc]) {
                     seen[nr][nc] = true; qx[tail] = nc; qy[tail] = nr; tail++;
                 }
             }
@@ -393,9 +400,50 @@ bool sim_room_solvable(const GameState *s)
     if (s->darkRoom && s->lampCol >= 0 && !seen[s->lampRow][s->lampCol]) return false;
 
     return coalLeft > 0;   /* a room with no coal would open its exit instantly */
+#undef OKCELL
 }
 
+bool sim_room_solvable(const GameState *s) { return solvable_banned(s, -1, -1); }
+
 bool sim_standable(const GameState *s, int c, int r) { return standable(s, c, r); }
+
+/* §5.5 crusher-path safety: a crusher may GUARD a route or a lump (that's a
+ * timing puzzle), but it must never be the only way through the room. Probe:
+ * re-run the checker with the standing cell its slam covers BANNED from the
+ * path; if the room stops being solvable, the crusher is deleted. Coal
+ * inside the kill zone is a timed grab, not a path, so it is set aside for
+ * the probe; a key/lamp there skips the probe instead (a guarded pickup is
+ * fair). NOTE: with the current open platform-chain generator the checker's
+ * jump envelope can hop past any single banned cell, so this almost never
+ * fires — it is the safety net §5.5 asks for, kept for organic generators. */
+void sim_cull_blocking_crushers(GameState *s)
+{
+    int i = 0;
+    while (i < s->enemyCount) {
+        Enemy *e = &s->enemies[i];
+        int c, floorRow, stand;
+        if (e->type != EN_CRUSHER) { i++; continue; }
+        c = (int)(e->baseX / TILE);
+        floorRow = (int)((e->baseY + (float)e->range) / TILE) + 1;
+        stand = floorRow - 1;
+        if (c < 0 || c >= ROOM_W || stand < 1 || stand >= ROOM_H ||
+            (s->keyRoom  && s->keyCol  == c && s->keyRow  == stand) ||
+            (s->darkRoom && s->lampCol == c && s->lampRow == stand)) { i++; continue; }
+        {
+            bool hadCoal = s->coal[stand][c];
+            bool ok;
+            s->coal[stand][c] = false;
+            ok = solvable_banned(s, c, stand);
+            s->coal[stand][c] = hadCoal;
+            if (!ok) {   /* it guards the ONLY path: delete it (swap-remove) */
+                s->enemies[i] = s->enemies[s->enemyCount - 1];
+                s->enemyCount--;
+                continue;
+            }
+        }
+        i++;
+    }
+}
 
 /* ============================================================= *
  *  Fallback template — a fixed, always-solvable staircase. Stamped
@@ -465,6 +513,7 @@ void sim_gen_room(GameState *s, uint64_t seed, int depth, int entryCol)
         Rng er;
         rng_seed(&er, splitmix64(seed ^ ((uint64_t)depth << 16) ^ 0xE1E1ULL));
         place_enemies(s, &er, depth);
+        sim_cull_blocking_crushers(s);   /* §5.5: no crusher may sever the only path */
         memcpy(s->enemyStart, s->enemies, sizeof s->enemyStart);  /* for respawn resets */
     }
     {
