@@ -1,0 +1,688 @@
+# author: Manus AI
+
+# Fresh custom navigator: ordinary coal and key movement is selected from
+# terrain sensors.  The only engine-assisted action is the mandatory exit shaft.
+
+last_col = -9999
+last_row = -9999
+stalled = 0
+locked_goal = none
+locked_goal_type = 0
+last_coal_count = -1
+locked_ladder = none
+locked_vertical = 0
+junction_attempts = 0
+detour_ladder = none
+detour_exit_ladder = none
+detour_phase = 0
+
+# Full-roster occupancy check.  This prevents a deliberate move into an enemy
+# even when it is beyond the short perception range.
+func enemy_on(col, row):
+    i = 0
+    n = enemy_count()
+    while i < n:
+        e = enemy(i)
+        if e != none and e.col == col and e.row == row then
+            return true
+        end
+        i = i + 1
+    while_end
+    return false
+func_end
+
+func safe_walk_left():
+    return not is_solid(my_col - 1, my_row) and (is_standable(my_col - 1, my_row) or is_ladder(my_col - 1, my_row)) and not shaking(my_col - 1, my_row) and not enemy_on(my_col - 1, my_row)
+func_end
+
+func safe_walk_right():
+    return not is_solid(my_col + 1, my_row) and (is_standable(my_col + 1, my_row) or is_ladder(my_col + 1, my_row)) and not shaking(my_col + 1, my_row) and not enemy_on(my_col + 1, my_row)
+func_end
+
+func safe_climb_up():
+    return on_ladder and not enemy_on(my_col, my_row - 1) and not shaking(my_col, my_row - 1)
+func_end
+
+func safe_climb_down():
+    return on_ladder and not enemy_on(my_col, my_row + 1) and not shaking(my_col, my_row + 1)
+func_end
+
+func safe_jump_left():
+    return not is_solid(my_col - 1, my_row) and not is_solid(my_col - 2, my_row) and (is_standable(my_col - 2, my_row) or is_ladder(my_col - 2, my_row)) and not enemy_on(my_col - 1, my_row) and not enemy_on(my_col - 2, my_row)
+func_end
+
+func safe_jump_right():
+    return not is_solid(my_col + 1, my_row) and not is_solid(my_col + 2, my_row) and (is_standable(my_col + 2, my_row) or is_ladder(my_col + 2, my_row)) and not enemy_on(my_col + 1, my_row) and not enemy_on(my_col + 2, my_row)
+func_end
+
+# Falls are allowed only to a verified, clear landing at most four rows below.
+func clear_fall_left(rows):
+    d = 0
+    while d < rows:
+        if is_solid(my_col - 1, my_row + d) or tile(my_col - 1, my_row + d) == SPIKE or shaking(my_col - 1, my_row + d) or enemy_on(my_col - 1, my_row + d) then
+            return false
+        end
+        d = d + 1
+    while_end
+    return true
+func_end
+
+func clear_fall_right(rows):
+    d = 0
+    while d < rows:
+        if is_solid(my_col + 1, my_row + d) or tile(my_col + 1, my_row + d) == SPIKE or shaking(my_col + 1, my_row + d) or enemy_on(my_col + 1, my_row + d) then
+            return false
+        end
+        d = d + 1
+    while_end
+    return true
+func_end
+
+func safe_drop_left(rows):
+    landing = my_row + rows
+    return not is_standable(my_col - 1, my_row) and is_standable(my_col - 1, landing) and tile(my_col - 1, landing) != SPIKE and not shaking(my_col - 1, landing) and not enemy_on(my_col - 1, landing) and clear_fall_left(rows)
+func_end
+
+func safe_drop_right(rows):
+    landing = my_row + rows
+    return not is_standable(my_col + 1, my_row) and is_standable(my_col + 1, landing) and tile(my_col + 1, landing) != SPIKE and not shaking(my_col + 1, landing) and not enemy_on(my_col + 1, landing) and clear_fall_right(rows)
+func_end
+
+func can_drop_left():
+    if safe_drop_left(1) then return true
+    if safe_drop_left(2) then return true
+    if safe_drop_left(3) then return true
+    if safe_drop_left(4) then return true
+    return false
+func_end
+
+func can_drop_right():
+    if safe_drop_right(1) then return true
+    if safe_drop_right(2) then return true
+    if safe_drop_right(3) then return true
+    if safe_drop_right(4) then return true
+    return false
+func_end
+
+# Scan static terrain for the closest usable ladder run above or below.
+func closest_up_ladder():
+    d = 0
+    while d <= 48:
+        x = my_col - d
+        # An upward transition needs an actual rung above this platform row.
+        if is_ladder(x, my_row - 1) then
+            return x
+        end
+        if d > 0 then
+            x = my_col + d
+            if is_ladder(x, my_row - 1) then
+                return x
+            end
+        end
+        d = d + 1
+    while_end
+    return none
+func_end
+
+func closest_down_ladder():
+    d = 0
+    while d <= 48:
+        x = my_col - d
+        # A downward transition needs an actual rung below this platform row.
+        if is_ladder(x, my_row + 1) then
+            return x
+        end
+        if d > 0 then
+            x = my_col + d
+            if is_ladder(x, my_row + 1) then
+                return x
+            end
+        end
+        d = d + 1
+    while_end
+    return none
+func_end
+
+# Find an upward ladder on the lower level, explicitly excluding the ladder
+# just used to descend so a detour cannot immediately reverse itself.
+func closest_other_up_ladder(skip_col):
+    d = 0
+    while d <= 48:
+        x = my_col - d
+        if x != skip_col and is_ladder(x, my_row - 1) then
+            return x
+        end
+        if d > 0 then
+            x = my_col + d
+            if x != skip_col and is_ladder(x, my_row - 1) then
+                return x
+            end
+        end
+        d = d + 1
+    while_end
+    return none
+func_end
+
+# A detour ladder must be on the same walkable platform segment.  This prevents
+# selecting a ladder beyond the very gap that caused the same-row stall.
+func clear_walk_left_to(col):
+    x = my_col - 1
+    while x >= col:
+        if is_solid(x, my_row) or not (is_standable(x, my_row) or is_ladder(x, my_row)) or shaking(x, my_row) or enemy_on(x, my_row) then
+            return false
+        end
+        x = x - 1
+    while_end
+    return true
+func_end
+
+func clear_walk_right_to(col):
+    x = my_col + 1
+    while x <= col:
+        if is_solid(x, my_row) or not (is_standable(x, my_row) or is_ladder(x, my_row)) or shaking(x, my_row) or enemy_on(x, my_row) then
+            return false
+        end
+        x = x + 1
+    while_end
+    return true
+func_end
+
+# Search the target-facing side first, but choose only a ladder that the bot
+# can reach across its current platform without crossing a gap or wall.
+func reachable_down_ladder_toward(target):
+    d = 0
+    while d <= 48:
+        if target.col < my_col then
+            x = my_col - d
+            if is_ladder(x, my_row + 1) and clear_walk_left_to(x) then
+                return x
+            end
+            if d > 0 then
+                x = my_col + d
+                if is_ladder(x, my_row + 1) and clear_walk_right_to(x) then
+                    return x
+                end
+            end
+        elif target.col > my_col then
+            x = my_col + d
+            if is_ladder(x, my_row + 1) and clear_walk_right_to(x) then
+                return x
+            end
+            if d > 0 then
+                x = my_col - d
+                if is_ladder(x, my_row + 1) and clear_walk_left_to(x) then
+                    return x
+                end
+            end
+        else
+            x = my_col - d
+            if is_ladder(x, my_row + 1) and clear_walk_left_to(x) then
+                return x
+            end
+            if d > 0 then
+                x = my_col + d
+                if is_ladder(x, my_row + 1) and clear_walk_right_to(x) then
+                    return x
+                end
+            end
+        end
+        d = d + 1
+    while_end
+    return none
+func_end
+
+# Select a reachable upward ladder on the detour level, while excluding the
+# descent column so the bot cannot walk back into the same loop.
+# Find a different reachable descent ladder on the current platform segment.
+func reachable_other_down_ladder(skip_col, target):
+    d = 0
+    while d <= 48:
+        if target.col < my_col then
+            x = my_col - d
+            if x != skip_col and is_ladder(x, my_row + 1) and clear_walk_left_to(x) then
+                return x
+            end
+            if d > 0 then
+                x = my_col + d
+                if x != skip_col and is_ladder(x, my_row + 1) and clear_walk_right_to(x) then
+                    return x
+                end
+            end
+        else
+            x = my_col + d
+            if x != skip_col and is_ladder(x, my_row + 1) and clear_walk_right_to(x) then
+                return x
+            end
+            if d > 0 then
+                x = my_col - d
+                if x != skip_col and is_ladder(x, my_row + 1) and clear_walk_left_to(x) then
+                    return x
+                end
+            end
+        end
+        d = d + 1
+    while_end
+    return none
+func_end
+
+# Continue down a ladder when broader exploration needs another level.
+func continue_downward():
+    if on_ladder and safe_climb_down() then
+        climb down
+        return true
+    elif is_ladder(my_col, my_row + 1) and not enemy_on(my_col, my_row + 1) and not shaking(my_col, my_row + 1) then
+        climb down
+        return true
+    end
+    return false
+func_end
+
+func reachable_other_up_ladder(skip_col, target):
+    d = 0
+    while d <= 48:
+        if target.col < my_col then
+            x = my_col - d
+            if x != skip_col and is_ladder(x, my_row - 1) and clear_walk_left_to(x) then
+                return x
+            end
+            if d > 0 then
+                x = my_col + d
+                if x != skip_col and is_ladder(x, my_row - 1) and clear_walk_right_to(x) then
+                    return x
+                end
+            end
+        elif target.col > my_col then
+            x = my_col + d
+            if x != skip_col and is_ladder(x, my_row - 1) and clear_walk_right_to(x) then
+                return x
+            end
+            if d > 0 then
+                x = my_col - d
+                if x != skip_col and is_ladder(x, my_row - 1) and clear_walk_left_to(x) then
+                    return x
+                end
+            end
+        else
+            x = my_col - d
+            if x != skip_col and is_ladder(x, my_row - 1) and clear_walk_left_to(x) then
+                return x
+            end
+            if d > 0 then
+                x = my_col + d
+                if x != skip_col and is_ladder(x, my_row - 1) and clear_walk_right_to(x) then
+                    return x
+                end
+            end
+        end
+        d = d + 1
+    while_end
+    return none
+func_end
+
+# Move toward an explicitly supplied column.  All state used here is local or
+# provided as a parameter, so helper scope never depends on top-level variables.
+func move_toward_col(col):
+    if col < my_col then
+        if safe_walk_left() then
+            walk left
+            return true
+        elif safe_jump_left() then
+            jump left
+            return true
+        end
+    elif col > my_col then
+        if safe_walk_right() then
+            walk right
+            return true
+        elif safe_jump_right() then
+            jump right
+            return true
+        end
+    end
+    return false
+func_end
+
+func descend_safely(target):
+    if target.col > my_col and can_drop_right() then
+        drop right
+        return true
+    elif target.col < my_col and can_drop_left() then
+        drop left
+        return true
+    elif facing == right and can_drop_right() then
+        drop right
+        return true
+    elif facing == left and can_drop_left() then
+        drop left
+        return true
+    elif can_drop_right() then
+        drop right
+        return true
+    elif can_drop_left() then
+        drop left
+        return true
+    end
+    return false
+func_end
+
+# Vertical travel is custom: choose a ladder column, walk to it, then climb.
+func climb_toward(ladder):
+    if on_ladder then
+        if safe_climb_up() then
+            climb up
+            return true
+        end
+        return false
+    end
+    # Once a ladder is selected, never abandon it for a target-side reverse.
+    if ladder == none then
+        return false
+    end
+    if ladder == my_col and is_ladder(my_col, my_row - 1) then
+        climb up
+        return true
+    end
+    return move_toward_col(ladder)
+func_end
+
+func descend_toward(target, ladder):
+    if on_ladder then
+        if safe_climb_down() then
+            climb down
+            return true
+        end
+        return false
+    end
+    # Keep the explicitly supplied junction until it succeeds or the main loop
+    # invalidates it after several no-progress attempts.
+    if ladder != none then
+        if ladder == my_col and is_ladder(my_col, my_row + 1) then
+            climb down
+            return true
+        end
+        return move_toward_col(ladder)
+    end
+    return descend_safely(target)
+func_end
+
+# Move away from a visible threat before terrain steering.  Enemy contact is
+# never treated as safe, including a raised crusher.
+func retreat_from(enemy):
+    away = side_of(my_col - enemy.col)
+    if away == left and safe_walk_left() then
+        walk left
+        return true
+    elif away == right and safe_walk_right() then
+        walk right
+        return true
+    elif safe_climb_up() then
+        climb up
+        return true
+    elif safe_climb_down() then
+        climb down
+        return true
+    end
+    return false
+func_end
+
+func avoid_visible_enemy():
+    e = nearest_enemy()
+    if e == none then
+        return false
+    end
+
+    range = limit(e.dist, 0, sight)
+    gap = distance(my_col, e.col)
+
+    if e.type == CRUSHER and range <= 1 then
+        # A raised crusher is still lethal on contact; wait rather than moving
+        # through its column during any part of its cycle.
+        say "hold crusher", e
+        wait 2
+        return true
+    elif enemy_within(1, above) or enemy_within(1, below) then
+        if safe_walk_left() then
+            walk left
+            return true
+        elif safe_walk_right() then
+            walk right
+            return true
+        end
+        wait 2
+        return true
+    elif range <= 2 and (e.type == BAT or e.type == SPIDER) then
+        if retreat_from(e) then return true
+        wait 2
+        return true
+    elif range == 2 and gap == 2 and (e.type == FOREMAN or e.type == BOULDER) then
+        if e.dir == left and e.going == right and safe_jump_left() then
+            jump left
+            return true
+        elif e.dir == right and e.going == left and safe_jump_right() then
+            jump right
+            return true
+        elif retreat_from(e) then
+            return true
+        end
+        wait 2
+        return true
+    elif range <= 1 then
+        if retreat_from(e) then return true
+        wait 2
+        return true
+    end
+    return false
+func_end
+
+# Recovery does not contain a left/right alternator.  It may only complete a
+# safe vertical transition; otherwise the main loop reselects the same intent.
+func recover(target):
+    if target.row > my_row then
+        return descend_safely(target)
+    elif target.row < my_row and safe_climb_up() then
+        climb up
+        return true
+    end
+    return false
+func_end
+
+# At the top of a ladder, a coal can be directly above the bot even though
+# there is no further ladder rung.  Handle that one-tile vertical target before
+# treating it as a ladder-climb request.
+func reach_adjacent_target(target):
+    if not on_ladder and target.col == my_col and target.row == my_row - 1 then
+        if not is_solid(my_col, my_row - 1) and not shaking(my_col, my_row - 1) and not enemy_on(my_col, my_row - 1) then
+            jump
+            return true
+        end
+    elif target.col == my_col and target.row == my_row + 1 then
+        if is_ladder(my_col, my_row + 1) and not enemy_on(my_col, my_row + 1) then
+            climb down
+            return true
+        end
+    end
+    return false
+func_end
+
+# Normal steering deliberately does not repeat an edge drop when a same-row
+# target cannot be walked to.  The top-level loop switches into a persistent
+# ladder detour instead.
+func steer_to(target, ladder):
+    if reach_adjacent_target(target) then
+        return true
+    elif target.row < my_row then
+        return climb_toward(ladder)
+    elif target.row > my_row then
+        return descend_toward(target, ladder)
+    end
+    return move_toward_col(target.col)
+func_end
+
+loop:
+    # Preserve the prior cell only after a real move, so a blocked turn cannot
+    # erase the memory needed to suppress an A-B-A-B oscillation.
+    if my_col == last_col and my_row == last_row then
+        stalled = stalled + 1
+    else
+        stalled = 0
+        junction_attempts = 0
+    end
+    last_col = my_col
+    last_row = my_row
+
+    # Lock one coal until the coal count changes.  This prevents nearest_coal
+    # tie-breaking from switching the target on alternating tiles.
+    if coal_remaining() > 0 then
+        if locked_goal == none or locked_goal_type != 1 or last_coal_count != coal_remaining() then
+            locked_goal = nearest_coal()
+            locked_goal_type = 1
+            last_coal_count = coal_remaining()
+            locked_ladder = none
+            locked_vertical = 0
+            junction_attempts = 0
+            detour_ladder = none
+            detour_exit_ladder = none
+            detour_phase = 0
+        end
+        target = locked_goal
+        say "coal", target, "at", cell(my_col, my_row)
+    elif key != none then
+        if locked_goal == none or locked_goal_type != 2 then
+            locked_goal = key
+            locked_goal_type = 2
+            locked_ladder = none
+            locked_vertical = 0
+            junction_attempts = 0
+            detour_ladder = none
+            detour_exit_ladder = none
+            detour_phase = 0
+        end
+        target = locked_goal
+        say "key", target, "at", cell(my_col, my_row)
+    else
+        locked_goal = none
+        locked_goal_type = 0
+        last_coal_count = -1
+        locked_ladder = none
+        locked_vertical = 0
+        junction_attempts = 0
+        detour_ladder = none
+        detour_exit_ladder = none
+        detour_phase = 0
+        say "exit"
+        go_to(exit)
+        continue
+    end
+
+    if target == none then
+        say "no target"
+        wait 1
+        continue
+    end
+
+    # Normal vertical steering is paused while a detour is in progress.
+    if detour_phase == 0 then
+        if target.row < my_row and locked_vertical != -1 then
+            locked_ladder = closest_up_ladder()
+            locked_vertical = -1
+        elif target.row > my_row and locked_vertical != 1 then
+            locked_ladder = closest_down_ladder()
+            locked_vertical = 1
+        elif target.row == my_row then
+            locked_ladder = none
+            locked_vertical = 0
+        end
+    end
+
+    if avoid_visible_enemy() == false then
+        acted = false
+        if detour_phase == 0 and stalled >= 2 then
+            # Normal junction retry; a detour uses its own persistent phases.
+            if locked_ladder != none and locked_vertical != 0 then
+                junction_attempts = junction_attempts + 1
+                say "mount", locked_ladder, locked_vertical
+                if junction_attempts >= 4 then
+                    locked_ladder = none
+                    locked_vertical = 0
+                    junction_attempts = 0
+                end
+            else
+                acted = recover(target)
+            end
+        end
+
+        if acted == false and detour_phase == 1 then
+            # Phase 1: reach the lower level on the chosen descent ladder.
+            if my_row > target.row then
+                # The earlier version immediately sought a return ladder here,
+                # which recreated the same loop.  First traverse the lower
+                # platform toward the coal's column instead.
+                detour_phase = 2
+                say "detour low", target
+                acted = move_toward_col(target.col)
+            else
+                acted = descend_toward(target, detour_ladder)
+            end
+        elif acted == false and detour_phase == 2 then
+            # Phase 2: traverse this lower platform toward the target column.
+            if reach_adjacent_target(target) then
+                acted = true
+            elif my_col != target.col then
+                acted = move_toward_col(target.col)
+            end
+            # If this platform still cannot progress, explore broader terrain:
+            # continue down the current shaft, or choose a different reachable
+            # descent ladder.  Do not return upward beside the original gap.
+            if acted == false then
+                if continue_downward() then
+                    detour_phase = 4
+                    say "detour deeper"
+                    acted = true
+                else
+                    next_ladder = reachable_other_down_ladder(detour_ladder, target)
+                    if next_ladder != none then
+                        detour_ladder = next_ladder
+                        detour_phase = 1
+                        say "detour next", detour_ladder
+                        acted = descend_toward(target, detour_ladder)
+                    else
+                        detour_ladder = none
+                        detour_exit_ladder = none
+                        detour_phase = 0
+                    end
+                end
+            end
+        elif acted == false and detour_phase == 4 then
+            # Phase 4: stay on the broader downward exploration path until a
+            # new platform is reached, then try the target-facing traversal.
+            if continue_downward() then
+                say "detour deeper"
+                acted = true
+            else
+                detour_phase = 2
+                acted = move_toward_col(target.col)
+            end
+        end
+
+        if acted == false and detour_phase == 0 then
+            acted = steer_to(target, locked_ladder)
+        end
+
+        if acted == false and detour_phase == 0 and target.row == my_row then
+            # Start a new detour only once: descend, cross on the lower level,
+            # then ascend through a different ladder rather than reversing.
+            detour_ladder = reachable_down_ladder_toward(target)
+            if detour_ladder != none then
+                detour_exit_ladder = none
+                detour_phase = 1
+                say "detour down", detour_ladder
+                acted = descend_toward(target, detour_ladder)
+            end
+        end
+
+        if acted == false then
+            say "blocked", target
+            wait 1
+        end
+    end
+loop_end

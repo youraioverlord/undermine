@@ -1,0 +1,343 @@
+# author: Kimi 2.6
+
+func safe_route_to(target):
+    r = route(target)
+    if r == up and not on_ladder then
+        say "safe_route: not on ladder, can't climb up"
+        return none
+    end
+    if r == down and not on_ladder then
+        say "safe_route: not on ladder, can't climb down"
+        return none
+    end
+    return r
+func_end
+
+func step_toward(target):
+    r = safe_route_to(target)
+    if r == none then
+        say "step_toward: no route to", target
+        return false
+    end
+    if r == left then walk left
+    if r == right then walk right
+    if r == up then climb up
+    if r == down then climb down
+    say "step_toward: moved", r, "toward", target
+    return true
+func_end
+
+func enemy_is_dangerous(e):
+    if e == none then return false
+    if e.type == CRUSHER then return false
+    return true
+func_end
+
+func immediate_threat():
+    e = nearest_enemy()
+    if enemy_is_dangerous(e) and e.dist <= 2 then
+        return e
+    end
+    if enemy_within(1, left) then
+        i = 0
+        while i < enemy_count():
+            en = enemy(i)
+            if en != none and en.type != CRUSHER and en.dist <= 1 and en.dir == left then
+                return en
+            end
+            i = i + 1
+        while_end
+    end
+    if enemy_within(1, right) then
+        i = 0
+        while i < enemy_count():
+            en = enemy(i)
+            if en != none and en.type != CRUSHER and en.dist <= 1 and en.dir == right then
+                return en
+            end
+            i = i + 1
+        while_end
+    end
+    if enemy_within(1, above) then
+        i = 0
+        while i < enemy_count():
+            en = enemy(i)
+            if en != none and en.type != CRUSHER and en.dist <= 1 and en.dir == above then
+                return en
+            end
+            i = i + 1
+        while_end
+    end
+    if enemy_within(1, below) then
+        i = 0
+        while i < enemy_count():
+            en = enemy(i)
+            if en != none and en.type != CRUSHER and en.dist <= 1 and en.dir == below then
+                return en
+            end
+            i = i + 1
+        while_end
+    end
+    return none
+func_end
+
+func crusher_threat():
+    i = 0
+    while i < enemy_count():
+        e = enemy(i)
+        if e != none and e.type == CRUSHER then
+            if danger_at(my_col, my_row) then
+                say "crusher_threat: CRUSHER covers my tile", my_col, my_row
+                return e
+            end
+            if e.state == warning and abs(e.col - my_col) <= 1 then
+                say "crusher_threat: CRUSHER warning nearby at", e.col, e.row
+                return e
+            end
+        end
+        i = i + 1
+    while_end
+    return none
+func_end
+
+func flee_direction(e):
+    if e == none then return any
+    if e.col < my_col then return right
+    if e.col > my_col then return left
+    if e.row < my_row then return down
+    if e.row > my_row then return up
+    return right
+func_end
+
+func can_stand_here(c, r):
+    if is_solid(c, r) then return false
+    if is_standable(c, r) then return true
+    if is_ladder(c, r) then return true
+    if r + 1 <= 20 and is_solid(c, r + 1) then return true
+    if r + 1 <= 20 and is_ladder(c, r + 1) then return true
+    return false
+func_end
+
+func safe_flee_dir(e):
+    if e == none then return any
+    d = flee_direction(e)
+    if d == left then
+        if can_stand_here(my_col - 1, my_row) and not danger_at(my_col - 1, my_row) then
+            return left
+        end
+        if can_stand_here(my_col + 1, my_row) and not danger_at(my_col + 1, my_row) then
+            return right
+        end
+        if on_ladder and can_stand_here(my_col, my_row - 1) and not danger_at(my_col, my_row - 1) then
+            return up
+        end
+        if can_stand_here(my_col, my_row + 1) and not danger_at(my_col, my_row + 1) then
+            return down
+        end
+        return any
+    end
+    if d == right then
+        if can_stand_here(my_col + 1, my_row) and not danger_at(my_col + 1, my_row) then
+            return right
+        end
+        if can_stand_here(my_col - 1, my_row) and not danger_at(my_col - 1, my_row) then
+            return left
+        end
+        if on_ladder and can_stand_here(my_col, my_row - 1) and not danger_at(my_col, my_row - 1) then
+            return up
+        end
+        if can_stand_here(my_col, my_row + 1) and not danger_at(my_col, my_row + 1) then
+            return down
+        end
+        return any
+    end
+    if d == up then
+        if on_ladder and can_stand_here(my_col, my_row - 1) and not danger_at(my_col, my_row - 1) then
+            return up
+        end
+        if can_stand_here(my_col - 1, my_row) and not danger_at(my_col - 1, my_row) then
+            return left
+        end
+        if can_stand_here(my_col + 1, my_row) and not danger_at(my_col + 1, my_row) then
+            return right
+        end
+        if can_stand_here(my_col, my_row + 1) and not danger_at(my_col, my_row + 1) then
+            return down
+        end
+        return any
+    end
+    if d == down then
+        if can_stand_here(my_col, my_row + 1) and not danger_at(my_col, my_row + 1) then
+            return down
+        end
+        if can_stand_here(my_col - 1, my_row) and not danger_at(my_col - 1, my_row) then
+            return left
+        end
+        if can_stand_here(my_col + 1, my_row) and not danger_at(my_col + 1, my_row) then
+            return right
+        end
+        if on_ladder and can_stand_here(my_col, my_row - 1) and not danger_at(my_col, my_row - 1) then
+            return up
+        end
+        return any
+    end
+    return any
+func_end
+
+func try_jump_over_gap(dir):
+    if dir == left then
+        if my_col - 2 >= 0 and is_standable(my_col - 2, my_row) and not is_solid(my_col - 1, my_row) then
+            say "try_jump_over_gap: jumping left over gap"
+            jump left
+            return true
+        end
+    end
+    if dir == right then
+        if my_col + 2 >= 0 and is_standable(my_col + 2, my_row) and not is_solid(my_col + 1, my_row) then
+            say "try_jump_over_gap: jumping right over gap"
+            jump right
+            return true
+        end
+    end
+    return false
+func_end
+
+func handle_blocked(target):
+    say "handle_blocked: path blocked to", target
+    if try_jump_over_gap(left) then return
+    if try_jump_over_gap(right) then return
+    r = route(target)
+    if r == left then
+        if on_ground then jump left
+        if on_ladder then climb up
+    end
+    if r == right then
+        if on_ground then jump right
+        if on_ladder then climb up
+    end
+    if r == up then
+        if on_ladder then
+            if is_standable(my_col - 1, my_row) then walk left
+            if is_standable(my_col + 1, my_row) then walk right
+        end
+    end
+    if r == down then
+        if on_ladder then climb down
+        if on_ground then
+            if is_standable(my_col - 1, my_row) then walk left
+            if is_standable(my_col + 1, my_row) then walk right
+        end
+    end
+    say "handle_blocked: still stuck, idling"
+    idle
+func_end
+
+func should_collect_lamp():
+    if lamp == none then return false
+    if coal_remaining() > 0 then return false
+    if key != none then return false
+    return true
+func_end
+
+loop:
+    say "tick start at", cell(my_col, my_row), "depth", depth, "coal", coal_got, "/", coal_total, "lives", lives
+
+    e = immediate_threat()
+    if e != none then
+        say "IMMEDIATE THREAT from", e.type, "at", e.col, e.row, "dist", e.dist
+        fd = safe_flee_dir(e)
+        if fd == left then walk left
+        if fd == right then walk right
+        if fd == up then climb up
+        if fd == down then climb down
+        if fd == any then
+            say "no safe flee dir, trying jump"
+            if e.dir == left then jump right
+            if e.dir == right then jump left
+            if e.dir == above then drop
+            if e.dir == below then jump
+            idle
+        end
+        continue
+    end
+
+    c = crusher_threat()
+    if c != none then
+        say "CRUSHER THREAT at", c.col, c.row, "state", c.state
+        fd = safe_flee_dir(c)
+        if fd == left then walk left
+        if fd == right then walk right
+        if fd == up then climb up
+        if fd == down then climb down
+        if fd == any then
+            say "crusher: no safe dir, idling"
+            idle
+        end
+        continue
+    end
+
+    if shaking(my_col, my_row) then
+        say "CRUMBLE under me! moving off"
+        if is_standable(my_col - 1, my_row) and not danger_at(my_col - 1, my_row) then walk left
+        if is_standable(my_col + 1, my_row) and not danger_at(my_col + 1, my_row) then walk right
+        if on_ladder then climb up
+        idle
+        continue
+    end
+
+    if coal_remaining() > 0 then
+        target = nearest_coal()
+        say "coal phase: target", target
+        if target == none then
+            say "nearest_coal none but remaining > 0, fallback to exit"
+            target = exit
+        end
+        if target != none then
+            result = go_to(target)
+            if result == arrived then
+                say "arrived at coal"
+            elif result == blocked then
+                handle_blocked(target)
+            else
+                say "moving toward coal"
+            end
+        end
+        continue
+    end
+
+    if key != none then
+        say "key phase: going to key at", key
+        result = go_to(key)
+        if result == arrived then
+            say "collected key"
+        elif result == blocked then
+            handle_blocked(key)
+        else
+            say "moving toward key"
+        end
+        continue
+    end
+
+    if should_collect_lamp() then
+        say "lamp phase: going to lamp at", lamp
+        result = go_to(lamp)
+        if result == arrived then
+            say "collected lamp"
+        elif result == blocked then
+            handle_blocked(lamp)
+        else
+            say "moving toward lamp"
+        end
+        continue
+    end
+
+    say "exit phase: going to exit at", exit
+    result = go_to(exit)
+    if result == arrived then
+        say "arrived at exit, descending"
+    elif result == blocked then
+        handle_blocked(exit)
+    else
+        say "moving toward exit"
+    end
+loop_end

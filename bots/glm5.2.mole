@@ -1,0 +1,89 @@
+# author: GLM-5.2 (Z.ai)
+
+# Checks if a given tile is safe to step into (avoids enemy bodies and active crushers)
+func is_safe(c, r):
+    if danger_at(c, r) then return false
+    e = nearest_enemy()
+    if e != none and e.type == CRUSHER then
+        if e.col == c and e.state != idle then return false
+    end
+    return true
+func_end
+
+loop:
+    e = nearest_enemy()
+    
+    # 1. Immediate danger on our tile (crusher slam or enemy body)
+    if danger_at(my_col, my_row) then
+        if is_safe(my_col + 1, my_row) and not is_solid(my_col + 1, my_row) then
+            walk right
+        elif is_safe(my_col - 1, my_row) and not is_solid(my_col - 1, my_row) then
+            walk left
+        else
+            if on_ground then jump else idle
+        end
+        continue
+    end
+    
+    # 2. Crusher management (wait if warning or moving under us)
+    if e != none and e.type == CRUSHER and e.col == my_col and e.state != idle then
+        wait 2
+        continue
+    end
+    
+    # 3. Mobile enemy evasion (only for same-row immediate threats)
+    if e != none and e.type != CRUSHER and e.dist <= 2 and e.row == my_row then
+        # Try to jump over approaching ground enemies exactly 2 tiles away
+        if (e.type == FOREMAN or e.type == BOULDER) and e.dist == 2 then
+            if e.dir == left and e.going == right then
+                jump left
+                continue
+            elif e.dir == right and e.going == left then
+                jump right
+                continue
+            end
+        end
+        
+        # Evade by stepping away
+        step_dir = side_of(my_col - e.col)
+        if step_dir == left and is_safe(my_col - 1, my_row) and not is_solid(my_col - 1, my_row) then
+            walk left
+            continue
+        elif step_dir == right and is_safe(my_col + 1, my_row) and not is_solid(my_col + 1, my_row) then
+            walk right
+            continue
+        end
+        
+        # Cornered, wait
+        wait 1
+        continue
+    end
+    
+    # 4. Goal selection and navigation
+    if coal_remaining() > 0 and nearest_coal() != none then
+        c = nearest_coal()
+        d = route(c)
+        if d == up then
+            if is_safe(my_col, my_row - 1) then climb up else wait 1
+        elif d == down then
+            # climb down requires a ladder; otherwise we must drop
+            if is_ladder(my_col, my_row + 1) or on_ladder then
+                if is_safe(my_col, my_row + 1) then climb down else wait 1
+            else
+                if is_safe(my_col, my_row + 1) then drop else wait 1
+            end
+        elif d == left then
+            if is_safe(my_col - 1, my_row) then walk left else wait 1
+        elif d == right then
+            if is_safe(my_col + 1, my_row) then walk right else wait 1
+        else
+            wait 1
+        end
+    elif key != none then
+        # Key rooms (depth 10+) have a locked exit
+        go_to(key)
+    else
+        # ALWAYS use go_to(exit) to handle the shaft descent precisely
+        go_to(exit)
+    end
+loop_end

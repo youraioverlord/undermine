@@ -1,0 +1,76 @@
+# author: Sol
+
+last_col = -1
+last_row = -1
+stuck = 0
+
+loop:
+    if my_col == last_col and my_row == last_row then
+        stuck = stuck + 1
+    else
+        stuck = 0
+    end
+    last_col = my_col
+    last_row = my_row
+
+    crusher = none
+    i = 0
+    while i < enemy_count():
+        foe = enemy(i)
+        if foe != none and foe.type == CRUSHER and foe.col == my_col and foe.state != idle then
+            crusher = foe
+            break
+        end
+        i = i + 1
+    while_end
+
+    if crusher != none then
+        say "dodge crusher", crusher
+        if facing == left then walk right else walk left
+        continue
+    end
+
+    threat = nearest_enemy()
+    if threat != none and threat.type != CRUSHER and threat.dist <= 2 then
+        say "evade", threat
+        if threat.col < my_col then
+            walk right
+        elif threat.col > my_col then
+            walk left
+        else
+            jump
+        end
+        continue
+    end
+
+    coal = nearest_coal()
+    target = none
+    if key != none then
+        target = key
+        say "key", target
+    elif coal != none then
+        target = coal
+        say "coal", coal_got, coal_total
+    elif lamp != none then
+        target = lamp
+        say "lamp", target
+    else
+        say "exit"
+        go_to(exit)
+        continue
+    end
+
+    result = go_to(target, up)
+    if result == blocked then
+        say "jump obstacle", target
+        if target.col < my_col then
+            jump left
+        elif target.col > my_col then
+            jump right
+        elif stuck > 1 then
+            if facing == left then jump right else jump left
+        else
+            jump
+        end
+    end
+loop_end

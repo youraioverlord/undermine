@@ -1,0 +1,310 @@
+# author: Claude Fable 5
+#
+# cautious.mole — a timid UNDERMINE bot. Safety first, coal second.
+#
+# Priority every tick, highest first:
+#   1. danger on/just above us   -> step clear, or wait
+#   2. chased up a ladder        -> keep climbing to the platform
+#   3. crusher nearby, not idle  -> wait until it rests
+#   4. any mobile enemy near     -> run away (never jump over — too risky)
+#   5. all clear                 -> go collect coal, then head for the exit
+#
+# It never attempts a jump-over and flees at a generous range, so it clears
+# fewer rooms than an aggressive bot — but it rarely dies to something it saw
+# coming. Contrast with greedy.mole, which trades caution for speed.
+#
+#     undermine --bot1 bots/cautious.mole
+#     undermine --moletest bots/cautious.mole
+#
+# See MOLESCRIPT.md for the language reference.
+
+# How close a mobile enemy must be before we drop everything and run.
+FLEE_RANGE = 3
+
+# Is cell `c` on our row safe to stand on — solid footing, no enemy body on it?
+func can_stand(c):
+    return is_standable(c, my_row) and not danger_at(c, my_row)
+func_end
+
+# Step one tile AWAY from column `ecol` onto safe ground. Never steps toward
+# the enemy — closing the distance to a near threat is how bots die; when
+# there's no away-side footing the caller bails, hops over, or holds.
+func flee(ecol):
+    if ecol >= my_col and can_stand(my_col - 1) then
+        walk left
+        return true
+    elif ecol <= my_col and can_stand(my_col + 1) then
+        walk right
+        return true
+    end
+    return false
+func_end
+
+# Is stepping off the ledge on side d (-1/+1) a survivable escape — no footing
+# there to walk on, but a floor to land on within a 4-tile fall?
+func safe_drop(d):
+    c = my_col + d
+    if is_standable(c, my_row) then return false
+    dd = 1
+    while dd <= 4:
+        if is_standable(c, my_row + dd) then return true
+        if is_solid(c, my_row + dd) then return false
+        dd = dd + 1
+    while_end
+    return false
+func_end
+
+# Any mobile enemy on our row band within `range` columns on side d (-1/+1)?
+# Uses the FULL roster — not sight — so an escape hop never launches toward a
+# chaser that just slipped out of view.
+func foe_toward(d, range):
+    i = 0
+    while i < enemy_count():
+        en = enemy(i)
+        if en.type != CRUSHER then
+            if distance(en.row, my_row) <= 1 and sign_of(en.col - my_col) == d and distance(en.col, my_col) <= range then return true
+        end
+        i = i + 1
+    while_end
+    return false
+func_end
+
+# Does a crusher hang over column c? Its whole column is lethal whenever it
+# slams — never jump through or onto one (a hop is committed mid-air).
+# Uses the full enemy roster, so even a crusher beyond sight range counts.
+func crusher_at(c):
+    i = 0
+    while i < enemy_count():
+        if enemy(i).type == CRUSHER and enemy(i).col == c then return true
+        i = i + 1
+    while_end
+    return false
+func_end
+
+# Is a gap hop in direction d sane? There must BE a landing two tiles over
+# (hopping off an edge with nothing there is a long fatal fall), no sensed
+# enemy in the arc or on the landing, and no crusher column along the way.
+func hop_clear(d):
+    # a running hop carries 2-3 tiles: some footing must exist there
+    if not (is_standable(my_col + 2 * d, my_row) or is_standable(my_col + 3 * d, my_row)) then return false
+    if crusher_at(my_col + d) or crusher_at(my_col + 2 * d) or crusher_at(my_col + 3 * d) then return false
+    if danger_at(my_col, my_row - 1) then return false
+    if danger_at(my_col + d, my_row - 1) then return false
+    if danger_at(my_col + d, my_row) then return false
+    if danger_at(my_col + 2 * d, my_row) then return false
+    return true
+func_end
+
+# Can we hop OVER a ground enemy TWO tiles ahead in direction d, landing one
+# past it? Headroom along the arc, a clear landing at +3, and no OTHER enemy
+# blocking takeoff or landing. The +2 column is deliberately untested: that's
+# the enemy we're clearing (its sprite pokes into the row above itself).
+func can_jump_over(d):
+    if not on_ground then return false
+    if is_solid(my_col, my_row - 1) then return false
+    if is_solid(my_col + d, my_row - 1) then return false
+    if is_solid(my_col + 2 * d, my_row - 1) then return false
+    if not is_standable(my_col + 3 * d, my_row) then return false
+    if crusher_at(my_col + d) or crusher_at(my_col + 2 * d) or crusher_at(my_col + 3 * d) then return false
+    if danger_at(my_col, my_row - 1) then return false
+    if danger_at(my_col + d, my_row - 1) then return false
+    if danger_at(my_col + 3 * d, my_row) then return false
+    return true
+func_end
+
+# Persistent: commit to a ladder retreat until we're back on solid ground, so we
+# don't stall halfway up as the enemy drifts in and out of range. `hops` counts
+# gap hops since the last coal, so we never bounce forever in a dead end.
+retreating = 0
+hops = 0
+lastcoal = 0
+alert = 0
+resp = 0
+
+loop:
+    # progress resets the gap-hop and death-spot-pause budgets
+    if coal_got != lastcoal then
+        lastcoal = coal_got
+        hops = 0
+        resp = 0
+    end
+
+    e = nearest_enemy()
+
+    # SOFT death-cell avoidance: `death` marks where this room last killed us.
+    # Deaths reset the enemies, so replaying an unchanged route dies the same
+    # way — near that spot we grow more careful (never a hard "keep out": the
+    # only route may pass through it, and walling it off would strand us).
+    nd = 0
+    if death != none then
+        if distance(my_col, death.col) <= 2 and distance(my_row, death.row) <= 2 then nd = 1
+    end
+
+    # 1. Something is climbing the ladder at us from below: commit to climbing
+    #    up and off onto the platform. This MUST come before the raw danger
+    #    check — a climber one rung below already pokes into our cell, and
+    #    "sit tight" (the danger fallback) on a ladder means being caught.
+    if not on_ladder then retreating = 0
+    if on_ladder and enemy_within(2, below) then retreating = 1
+    if on_ladder and retreating == 1 then
+        if e != none then say "climbing away from", e else say "climbing away"
+        if enemy_within(1, below) then
+            # at our heels: a foreman climbs almost as fast as we do, so the
+            # rail is lost — LEAP off it sideways instead (a jump breaks the
+            # column instantly), wherever a survivable landing exists. Never
+            # leap through a crusher column: touching one kills even idle.
+            if safe_drop(0 - 1) and not crusher_at(my_col - 1) and not crusher_at(my_col - 2) then
+                say "- leap off!"
+                jump left
+            elif safe_drop(1) and not crusher_at(my_col + 1) and not crusher_at(my_col + 2) then
+                say "- leap off!"
+                jump right
+            elif not danger_at(my_col, my_row - 1) then
+                climb up
+            else
+                wait 1
+            end
+        elif not danger_at(my_col, my_row - 1) then
+            # keep climbing: past the last rung the game stands us on TOP of
+            # the ladder automatically, and the ground logic steps us clear.
+            climb up
+        else
+            wait 1
+        end
+        continue
+    end
+
+    # 2. Immediate danger on us or in the cell just above (a spider dropping in):
+    #    get clear if we can, otherwise sit tight.
+    if danger_at(my_col, my_row) or danger_at(my_col, my_row - 1) then
+        if e == none or not flee(e.col) then wait 3
+        continue
+    end
+
+    # 3. A crusher is close and NOT idle (flashing or slamming): wait for it to
+    #    reset before going anywhere near its column. We only ever move on while
+    #    it is idle (raised and resting).
+    if e != none and e.type == CRUSHER and e.dist <= 2 and e.state != idle then
+        say "waiting out", e
+        wait 2
+        continue
+    end
+
+    # 4. A mobile enemy is within our caution range: run away. HYSTERESIS
+    #    kills the boundary dance: `alert` latches ON inside FLEE_RANGE and
+    #    only releases 2 tiles beyond it, so fleeing and coal-chasing can't
+    #    alternate tick by tick (the walk-left/right shiver). While alert,
+    #    flee only from an APPROACHING foe (or one right on us) — one that is
+    #    leaving gets watched, not danced around. CORNERED (no safe step),
+    #    take a survivable drop, or the last-resort hop-over.
+    if e == none or e.type == CRUSHER then
+        alert = 0
+    elif e.dist <= FLEE_RANGE + nd then
+        alert = 1
+    elif e.dist >= FLEE_RANGE + 2 + nd then
+        alert = 0
+    end
+    if e != none and e.type != CRUSHER and alert == 1 then
+        say "fleeing", e, "dist", e.dist
+        d      = sign_of(my_col - e.col)         # away from the enemy
+        if d == 0 then d = 0 - 1
+        gap    = e.col - my_col
+        ground = e.type == FOREMAN or e.type == BOULDER
+        onrow  = distance(e.row, my_row) <= 1
+        toward = e.going == side_of(0 - gap)
+        # Trapped against a wall/edge with a ground enemy closing in: take the
+        # hop-over at its one workable spacing (2 tiles, approaching) BEFORE
+        # flee's fallback would step us TOWARD the enemy and waste the window.
+        if ground and onrow and distance(e.col, my_col) == 2 and toward and not can_stand(my_col + d) and can_jump_over(sign_of(gap)) then
+            say "- trapped, hop over!"
+            jump side_of(gap)
+            continue
+        end
+        # watch (hold still) only a foe that is BESIDE us and moving away —
+        # `toward` reads horizontal heading, so a foe on OUR column (above or
+        # below, gap 0) must never be "watched": it may be climbing right at us
+        if gap != 0 and not toward and e.dist >= 2 then
+            say "- watching it"
+            wait 2
+            continue
+        end
+        if not flee(e.col) then
+            # cornered: a ladder top under our feet is an exit — duck down it,
+            # out of a walker's path (and crusher/spider-proof besides)
+            if is_ladder(my_col, my_row + 1) and not enemy_within(3, below) then
+                say "- down the ladder"
+                climb down
+            elif safe_drop(d) then
+                say "- bailing off the ledge"
+                drop side_of(d)
+            elif ground and onrow and distance(e.col, my_col) == 2 and toward and can_jump_over(sign_of(gap)) then
+                say "- no way out, hop over!"
+                jump side_of(gap)
+            elif e.dist <= 1 then
+                # truly cornered and it's on us: leap away anyway and take
+                # the chance — a moving platform may drift under the arc,
+                # and standing still is certain death
+                say "- leap of faith!"
+                jump side_of(0 - gap)
+            else
+                wait 2
+            end
+        end
+        continue
+    end
+
+    # 4b. At the doorstep of the death spot with a MOBILE enemy near: pause a
+    #     beat rather than re-enter on the killing timing. Soft on three
+    #     counts: crushers excluded (they never leave — the .state timing
+    #     check handles them), the enemy moving on ends it, and a budget
+    #     (reset on progress) caps it so it can never become a stall.
+    if nd == 1 and e != none and e.type != CRUSHER and e.dist <= 3 and resp < 10 then
+        if distance(my_col, death.col) <= 1 and distance(my_row, death.row) <= 1 then
+            say "death spot - respect"
+            resp = resp + 1
+            wait 2
+            continue
+        end
+    end
+
+    # 5. Coast is clear — work the goals: the lamp (lights a dark room), the
+    #    coal, then the KEY if this room has one (the exit stays SHUT without
+    #    it), and finally the exit. `say` narrates, and nervously calls out
+    #    any enemy in sight even outside the flee range.
+    if e != none then say "wary of", e, "dist", e.dist, "-"
+    if lamp != none then
+        say "fetching the lamp"
+        r = go_to(lamp)
+    elif coal_remaining() > 0 then
+        say "coal left:", coal_remaining()
+        r = go_to(nearest_coal())
+    elif key != none then
+        say "fetching the key"
+        r = go_to(key)
+    else
+        say "to the exit"
+        r = go_to(exit)
+    end
+
+    # 6. No walk/climb route exists (a one-tile gap in the floor): even a
+    #    careful mole hops a gap — but only with nothing in sight, never into
+    #    danger, and not forever (a few fruitless hops -> stand still and let
+    #    the arena watchdog handle a truly unreachable room).
+    if r == blocked and e == none then
+        d = 1
+        if facing == left then d = 0 - 1
+        if hops >= 3 then
+            wait 8
+        elif hop_clear(d) and not foe_toward(d, 6) then
+            hops = hops + 1
+            say "- hop the gap"
+            jump side_of(d)
+        elif hop_clear(0 - d) and not foe_toward(0 - d, 6) then
+            hops = hops + 1
+            say "- hop the gap"
+            jump side_of(0 - d)
+        else
+            wait 4
+        end
+    end
+loop_end

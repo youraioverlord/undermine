@@ -1,0 +1,131 @@
+# author: Claude Opus 4.8
+#
+# highroad.mole — a contrast to greedy.mole. Identical play stack, but its go_to
+# calls pass a LEFT bias, so through the very same rooms it prefers left-hand
+# routes and diverges from greedy's neutral pathing. Load one on each screen to
+# watch two capable bots take different paths:
+#
+#     undermine --bot1 bots/greedy.mole --bot2 bots/highroad.mole
+#
+# The only lines that differ from greedy.mole are the two go_to calls in step 3.
+# See MOLESCRIPT.md for the language reference.
+
+func hop_clear(d):
+    if danger_at(my_col, my_row - 1) then return false
+    if danger_at(my_col + d, my_row - 1) then return false
+    if danger_at(my_col + d, my_row) then return false
+    if danger_at(my_col + d + d, my_row) then return false
+    return true
+func_end
+
+func can_jump_over(d):
+    if not on_ground then return false
+    if is_solid(my_col, my_row - 1) then return false
+    if is_solid(my_col + d, my_row - 1) then return false
+    if is_solid(my_col + d + d, my_row - 1) then return false
+    if not is_standable(my_col + d + d + d, my_row) then return false
+    if danger_at(my_col, my_row - 1) then return false
+    if danger_at(my_col + d, my_row - 1) then return false
+    if danger_at(my_col + d + d, my_row - 1) then return false
+    if danger_at(my_col + d + d + d, my_row) then return false
+    return true
+func_end
+
+func step_away(ecol):
+    if ecol >= my_col and is_standable(my_col - 1, my_row) and not danger_at(my_col - 1, my_row) then
+        walk left
+        return true
+    end
+    if ecol <= my_col and is_standable(my_col + 1, my_row) and not danger_at(my_col + 1, my_row) then
+        walk right
+        return true
+    end
+    if is_standable(my_col - 1, my_row) and not danger_at(my_col - 1, my_row) then
+        walk left
+        return true
+    end
+    if is_standable(my_col + 1, my_row) and not danger_at(my_col + 1, my_row) then
+        walk right
+        return true
+    end
+    return false
+func_end
+
+hops = 0
+lastcoal = 0
+retreating = 0
+
+loop:
+    if coal_got != lastcoal then
+        lastcoal = coal_got
+        hops = 0
+    end
+
+    e = nearest_enemy()
+
+    if not on_ladder then retreating = 0
+    if on_ladder and enemy_within(2, below) then retreating = 1
+    if on_ladder and retreating == 1 then
+        if not danger_at(my_col, my_row - 1) then climb up else wait 1
+        continue
+    end
+
+    if danger_at(my_col, my_row) or danger_at(my_col, my_row - 1) then
+        moved = false
+        if e != none then moved = step_away(e.col)
+        if not moved then wait 3
+        continue
+    end
+
+    # crusher beside us and not idle (flashing / slamming): wait for it to reset
+    if e != none and e.type == CRUSHER and e.dist <= 1 and e.state != idle then
+        wait 2
+        continue
+    end
+
+    if e != none and e.type != CRUSHER and e.dist <= 2 then
+        ground = (e.type == FOREMAN or e.type == BOULDER)
+        onrow  = e.row >= my_row - 1 and e.row <= my_row + 1
+        gap    = e.col - my_col
+        if ground and onrow and (gap == 2 or gap == 0 - 2) then
+            d = 1
+            if gap < 0 then d = -1
+            toward = false
+            if d == 1 and e.going == left then toward = true
+            if d == 0 - 1 and e.going == right then toward = true
+            if toward and can_jump_over(d) then
+                if d == 1 then jump right else jump left
+                continue
+            end
+        end
+        if not step_away(e.col) then wait 2
+        continue
+    end
+
+    # 3. Navigate one tile toward the goal — biased LEFT (this is the divergence).
+    if coal_remaining() > 0 then
+        r = go_to(nearest_coal(), left)
+    else
+        r = go_to(exit, left)
+    end
+
+    if r == blocked then
+        if hops >= 3 then
+            wait 8
+        else
+            d = 1
+            if facing == left then d = -1
+            if hop_clear(d) then
+                hops = hops + 1
+                if d == 1 then jump right else jump left
+            else
+                if hop_clear(0 - d) then
+                    hops = hops + 1
+                    if d == 1 then jump left else jump right
+                else
+                    wait 4
+                end
+            end
+        end
+    end
+loop_end
