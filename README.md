@@ -1,5 +1,7 @@
 # UNDERMINE
 
+![UNDERMINE MoleScript AI benchmark](assets/undermine-social-preview.png)
+
 *A C64-style coal-mining platformer that is secretly an AI benchmark — and openly a very good time.*
 
 **v1.0** · C99 + [raylib](https://www.raylib.com/) · fully deterministic · two screens, one seed, no mercy

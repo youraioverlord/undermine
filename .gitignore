@@ -1,5 +1,7 @@
 build/
 *.png
+!assets/
+!assets/undermine-social-preview.png
 *.dat
 bot1.log
 bot2.log
