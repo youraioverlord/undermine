@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libxi-dev \
+            libxrandr-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Run selftest on Windows
+        if: runner.os == 'Windows'
+        run: .\build\Release\undermine.exe --selftest
+
+      - name: Run selftest on Linux
+        if: runner.os == 'Linux'
+        run: ./build/undermine --selftest
