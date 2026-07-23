@@ -183,6 +183,11 @@ matrix — beat that, silicon.
 | [`DESIGN.md`](DESIGN.md) | The curious | The game's design document — generation, difficulty ramp, the C64 constraints |
 | `bots/*.mole` | Everyone (post-exam) | Reference bots, fully commented |
 
+## License
+
+UNDERMINE is free software released under the
+[GNU General Public License v3.0](LICENSE).
+
 ## Fine print
 
 Deterministic 50 Hz simulation; the interpreter is sandboxed (no file or
